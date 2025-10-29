@@ -1,0 +1,285 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'LOX24 Custom SMS Sender for AWS Cognito - Automated Deployment'
+
+Parameters:
+  Lox24AuthToken:
+    Type: String
+    NoEcho: true
+    Description: Your LOX24 API authentication token
+    MinLength: 1
+  
+  Lox24SenderId:
+    Type: String
+    Description: Default sender ID for SMS messages
+    Default: '2fa'
+    MinLength: 1
+  
+  Lox24ApiHost:
+    Type: String
+    Description: LOX24 API hostname
+    Default: 'api.lox24.eu'
+  
+  Lox24ServiceCode:
+    Type: String
+    Description: LOX24 service code ('direct' or 'text2speech')
+    Default: 'direct'
+  
+  UserPoolId:
+    Type: String
+    Description: Cognito User Pool ID to integrate with
+    AllowedPattern: '^[\w-]+_[0-9a-zA-Z]+$'
+    ConstraintDescription: Must be a valid Cognito User Pool ID
+  
+  EnableDebugLogging:
+    Type: String
+    Description: Enable detailed debug logging (not recommended for production)
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  
+  LambdaCodeS3Bucket:
+    Type: String
+    Description: S3 bucket containing the Lambda deployment package (leave empty to create from local)
+    Default: ''
+  
+  LambdaCodeS3Key:
+    Type: String
+    Description: S3 key for Lambda deployment package
+    Default: 'lox24-cognito-sms-lambda.zip'
+
+Conditions:
+  UseS3Code: !Not [!Equals [!Ref LambdaCodeS3Bucket, '']]
+
+Resources:
+  # KMS Key for encrypting/decrypting verification codes
+  CognitoSMSKMSKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: KMS key for LOX24 Cognito SMS sender encryption
+      KeyPolicy:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: Enable IAM User Permissions
+            Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'kms:*'
+            Resource: '*'
+          
+          - Sid: Allow Cognito to encrypt
+            Effect: Allow
+            Principal:
+              Service: cognito-idp.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:CreateGrant
+            Resource: '*'
+            Condition:
+              StringEquals:
+                'kms:ViaService': !Sub 'cognito-idp.${AWS::Region}.amazonaws.com'
+          
+          - Sid: Allow Lambda to decrypt
+            Effect: Allow
+            Principal:
+              AWS: !GetAtt LambdaExecutionRole.Arn
+            Action:
+              - kms:Decrypt
+            Resource: '*'
+      
+      EnableKeyRotation: true
+      Tags:
+        - Key: Name
+          Value: LOX24-Cognito-SMS-KMS-Key
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  CognitoSMSKMSKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: alias/lox24-cognito-sms
+      TargetKeyId: !Ref CognitoSMSKMSKey
+
+  # IAM Role for Lambda Function
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'LOX24-Cognito-SMS-Lambda-Role-${AWS::Region}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      
+      Policies:
+        - PolicyName: KMSDecryptPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - kms:Decrypt
+                Resource: !GetAtt CognitoSMSKMSKey.Arn
+      
+      Tags:
+        - Key: Name
+          Value: LOX24-Cognito-SMS-Lambda-Role
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # CloudWatch Log Group for Lambda
+  LambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${LambdaFunction}'
+      RetentionInDays: 30
+      Tags:
+        - Key: Name
+          Value: LOX24-Cognito-SMS-Lambda-Logs
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Lambda Function
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: lox24-cognito-sms-sender
+      Description: Custom SMS sender for AWS Cognito using LOX24 Gateway
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      
+      Code:
+        !If
+          - UseS3Code
+          - S3Bucket: !Ref LambdaCodeS3Bucket
+            S3Key: !Ref LambdaCodeS3Key
+          - ZipFile: |
+              // Placeholder - Replace with actual deployment package
+              export const handler = async (event) => {
+                throw new Error('Please deploy the actual Lambda code package');
+              };
+      
+      Environment:
+        Variables:
+          LOX24_AUTH_TOKEN: !Ref Lox24AuthToken
+          LOX24_SENDER_ID: !Ref Lox24SenderId
+          LOX24_API_HOST: !Ref Lox24ApiHost
+          LOX24_SERVICE_CODE: !Ref Lox24ServiceCode
+          KMS_KEY_ID: !Ref CognitoSMSKMSKey
+          KMS_KEY_ARN: !GetAtt CognitoSMSKMSKey.Arn
+          ENABLE_DEBUG_LOGGING: !Ref EnableDebugLogging
+      
+      Tags:
+        - Key: Name
+          Value: LOX24-Cognito-SMS-Sender
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  # Lambda Permission for Cognito to invoke
+  LambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref LambdaFunction
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !Sub 'arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}'
+
+  # CloudWatch Alarm for Lambda Errors
+  LambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: LOX24-Cognito-SMS-Lambda-Errors
+      AlarmDescription: Alert when Lambda function has errors
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaFunction
+      TreatMissingData: notBreaching
+
+  # CloudWatch Alarm for Lambda Throttles
+  LambdaThrottleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: LOX24-Cognito-SMS-Lambda-Throttles
+      AlarmDescription: Alert when Lambda function is throttled
+      MetricName: Throttles
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaFunction
+      TreatMissingData: notBreaching
+
+  # CloudWatch Alarm for Lambda Duration
+  LambdaDurationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: LOX24-Cognito-SMS-Lambda-Duration
+      AlarmDescription: Alert when Lambda execution takes too long
+      MetricName: Duration
+      Namespace: AWS/Lambda
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 25000
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref LambdaFunction
+      TreatMissingData: notBreaching
+
+Outputs:
+  LambdaFunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt LambdaFunction.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaFunctionArn'
+  
+  LambdaFunctionName:
+    Description: Name of the Lambda function
+    Value: !Ref LambdaFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-LambdaFunctionName'
+  
+  KMSKeyId:
+    Description: KMS Key ID for Cognito encryption
+    Value: !Ref CognitoSMSKMSKey
+    Export:
+      Name: !Sub '${AWS::StackName}-KMSKeyId'
+  
+  KMSKeyArn:
+    Description: KMS Key ARN for Cognito encryption
+    Value: !GetAtt CognitoSMSKMSKey.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-KMSKeyArn'
+  
+  NextSteps:
+    Description: Next steps to complete integration
+    Value: !Sub |
+      1. Upload Lambda deployment package to S3 or update function code directly
+      2. Go to Cognito User Pool: ${UserPoolId}
+      3. Navigate to: User pool properties -> Lambda triggers
+      4. Add Lambda trigger: Custom SMS sender
+      5. Select Lambda function: ${LambdaFunction}
+      6. Select KMS key: ${CognitoSMSKMSKeyAlias}
+      7. Save changes
+      8. Test by triggering a sign-up or authentication flow
