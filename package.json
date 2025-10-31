@@ -1,27 +1,31 @@
 {
-  "name": "lox24-cognito-sms-sender",
-  "version": "1.0.0",
-  "description": "AWS Lambda function for sending Cognito SMS messages via LOX24 Gateway",
-  "main": "index.mjs",
-  "type": "module",
-  "scripts": {
-    "build": "npm install --production && zip -r lox24-cognito-sms-lambda.zip . -x '*.git*' -x 'node_modules/.cache/*' -x 'tests/*'",
-    "test": "echo \"No tests configured yet\" && exit 0"
-  },
-  "keywords": [
-    "aws",
-    "lambda",
-    "cognito",
-    "sms",
-    "lox24",
-    "authentication"
-  ],
-  "author": "LOX24",
-  "license": "MIT",
-  "dependencies": {
-    "@aws-crypto/client-node": "^4.0.1"
-  },
-  "engines": {
-    "node": ">=18.x"
-  }
+    "name": "lox24-cognito-sms-sender",
+    "version": "1.0.0",
+    "description": "AWS Lambda function for sending Cognito SMS messages via LOX24 Gateway",
+    "main": "index.mjs",
+    "type": "module",
+    "scripts": {
+        "build": "npm install --production && zip -r lox24-cognito-sms-lambda.zip . -x '*.git*' -x 'node_modules/.cache/*' -x 'tests/*' -x '*.sh' -x '*.yaml' -x '*.md' -x '.idea/*'",
+        "test": "echo \"No tests configured yet\" && exit 0"
+    },
+    "keywords": [
+        "aws",
+        "lambda",
+        "cognito",
+        "sms",
+        "lox24",
+        "authentication"
+    ],
+    "author": "LOX24",
+    "license": "MIT",
+    "dependencies": {
+        "@aws-crypto/client-node": "^4.0.1"
+    },
+    "devDependencies": {
+        "@aws-sdk/client-kms": "^3.0.0",
+        "aws-sdk": "^2.0.0"
+    },
+    "engines": {
+        "node": ">=22.x"
+    }
 }

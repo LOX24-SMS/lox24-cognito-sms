@@ -1,0 +1,11 @@
+{
+  "Variables": {
+    "LOX24_AUTH_TOKEN": "YOUR_LOX24_TOKEN",
+    "LOX24_SENDER_ID": "YOUR_SENDER_ID",
+    "KMS_KEY_ID": "YOUR_KMS_KEY_ID",
+    "KMS_KEY_ARN": "YOUR_KMS_KEY_ARN",
+    "LOX24_API_HOST": "api.lox24.eu",
+    "LOX24_SERVICE_CODE": "direct",
+    "ENABLE_DEBUG_LOGGING": "false"
+  }
+}
