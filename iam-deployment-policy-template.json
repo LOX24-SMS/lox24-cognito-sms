@@ -52,7 +52,9 @@
                 "kms:ListKeys",
                 "kms:ListAliases",
                 "kms:PutKeyPolicy",
-                "kms:GetKeyPolicy"
+                "kms:GetKeyPolicy",
+                "kms:CreateGrant",
+                "kms:Decrypt"
             ],
             "Resource": "*"{{IP_CONDITION}}
     },
@@ -64,7 +66,9 @@
                 "cognito-idp:DescribeUserPool",
                 "cognito-idp:ListUserPools",
                 "cognito-idp:UpdateUserPool",
-                "cognito-idp:ListUserPoolClients"
+                "cognito-idp:ListUserPoolClients",
+                "cognito-idp:AdminGetUser",
+                "cognito-idp:AdminUpdateUserAttributes"
             ],
             "Resource": "*"{{IP_CONDITION}}
     },

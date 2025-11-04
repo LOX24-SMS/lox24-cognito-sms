@@ -3,7 +3,7 @@
 # LOX24 Cognito SMS Sender - Enhanced Deployment Script v2.1 (FIXED)
 # This script automates the deployment with extensive checks and debugging
 
-set -e
+# Removed 'set -e' to prevent silent failures - using explicit error handling instead
 
 # Colors for output
 RED='\033[0;31m'
@@ -49,12 +49,27 @@ check_aws_command() {
     debug "Running: $cmd"
 
     if output=$(eval "$cmd" 2>&1); then
-        debug "Success: $description"
-        echo "$output"
-        return 0
+        local exit_code=$?
+        if [ $exit_code -eq 0 ]; then
+            debug "Success: $description"
+            echo "$output"
+            return 0
+        else
+            echo -e "${RED}✗ Failed: $description${NC}" >&2
+            echo -e "${RED}Exit code: $exit_code${NC}" >&2
+            echo -e "${RED}Error output:${NC}" >&2
+            echo "$output" >&2
+            log "Failed: $description - Exit code: $exit_code - Output: $output"
+            return $exit_code
+        fi
     else
-        debug "Failed: $description - $output"
-        return 1
+        local exit_code=$?
+        echo -e "${RED}✗ Failed: $description${NC}" >&2
+        echo -e "${RED}Exit code: $exit_code${NC}" >&2
+        echo -e "${RED}Error output:${NC}" >&2
+        echo "$output" >&2
+        log "Failed: $description - Exit code: $exit_code - Output: $output"
+        return $exit_code
     fi
 }
 
@@ -518,19 +533,93 @@ if [ -f "lox24-cognito-sms-lambda.zip" ]; then
     rm lox24-cognito-sms-lambda.zip
 fi
 
-echo "Creating ZIP package..."
-zip -r lox24-cognito-sms-lambda.zip . \
-    -x "*.git*" \
-    -x "node_modules/.cache/*" \
-    -x "tests/*" \
-    -x "*.sh" \
-    -x "*.yaml" \
-    -x "*.md" \
-    -x ".idea/*" > /dev/null 2>&1
+# Create a clean build directory
+echo "Preparing package directory..."
+BUILD_DIR="/tmp/lambda-build-$$"
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
 
-if [ -f "lox24-cognito-sms-lambda.zip" ]; then
+# Copy only necessary files
+echo "Copying Lambda function files..."
+
+# Check for index file (either .mjs or .js)
+HANDLER_FILE=""
+if [ -f "index.mjs" ]; then
+    HANDLER_FILE="index.mjs"
+    HANDLER_NAME="index.handler"
+elif [ -f "index.js" ]; then
+    HANDLER_FILE="index.js"
+    HANDLER_NAME="index.handler"
+else
+    echo -e "${RED}✗ Error: index.mjs or index.js not found in current directory${NC}"
+    echo "Current directory: $(pwd)"
+    echo "Files available:"
+    ls -la
+    exit 1
+fi
+
+cp "$HANDLER_FILE" "$BUILD_DIR/"
+echo "  ✓ $HANDLER_FILE"
+
+if [ -f "package.json" ]; then
+    cp package.json "$BUILD_DIR/"
+    echo "  ✓ package.json"
+else
+    echo -e "${YELLOW}  ⊘ package.json not found (optional)${NC}"
+fi
+
+if [ -f "package-lock.json" ]; then
+    cp package-lock.json "$BUILD_DIR/"
+    echo "  ✓ package-lock.json"
+fi
+
+# Copy any other JS/MJS files
+OTHER_FILES=$(find . -maxdepth 1 \( -name "*.js" -o -name "*.mjs" \) -not -name "$HANDLER_FILE" 2>/dev/null)
+if [ -n "$OTHER_FILES" ]; then
+    echo "$OTHER_FILES" | while read -r file; do
+        cp "$file" "$BUILD_DIR/"
+        echo "  ✓ $(basename $file)"
+    done
+fi
+
+# Install production dependencies in build directory
+if [ -f "$BUILD_DIR/package.json" ]; then
+    echo "Installing production dependencies..."
+    cd "$BUILD_DIR"
+    npm install --production --silent 2>&1 | tee -a "$LOG_FILE"
+    NPM_EXIT=$?
+    cd - > /dev/null
+
+    if [ $NPM_EXIT -ne 0 ]; then
+        echo -e "${RED}✗ npm install failed${NC}"
+        rm -rf "$BUILD_DIR"
+        exit 1
+    fi
+else
+    echo "No package.json - skipping npm install"
+fi
+
+# Create ZIP from build directory
+echo "Creating ZIP package..."
+cd "$BUILD_DIR"
+zip -r "$OLDPWD/lox24-cognito-sms-lambda.zip" . > /dev/null 2>&1
+ZIP_EXIT=$?
+cd - > /dev/null
+
+# Cleanup build directory
+rm -rf "$BUILD_DIR"
+
+if [ $ZIP_EXIT -eq 0 ] && [ -f "lox24-cognito-sms-lambda.zip" ]; then
     ZIP_SIZE=$(du -h lox24-cognito-sms-lambda.zip | cut -f1)
     echo -e "${GREEN}✓ Deployment package created: $ZIP_SIZE${NC}"
+
+    # Check size (Lambda limit is 50MB for direct upload, 250MB uncompressed)
+    ZIP_SIZE_BYTES=$(stat -f%z lox24-cognito-sms-lambda.zip 2>/dev/null || stat -c%s lox24-cognito-sms-lambda.zip 2>/dev/null)
+    if [ "$ZIP_SIZE_BYTES" -gt 52428800 ]; then
+        echo -e "${RED}✗ Package too large: $ZIP_SIZE (limit: 50MB)${NC}"
+        echo "Consider removing unnecessary dependencies or use S3 upload"
+        exit 1
+    fi
 else
     echo -e "${RED}✗ Failed to create deployment package${NC}"
     exit 1
@@ -552,17 +641,63 @@ else
 fi
 
 if [ "$FUNCTION_EXISTS" = true ]; then
-    echo "Updating existing Lambda function..."
+    echo "Updating existing Lambda function code..."
     UPDATE_OUTPUT=$(aws lambda update-function-code \
         --function-name "$FUNCTION_NAME" \
         --zip-file fileb://lox24-cognito-sms-lambda.zip \
         --region "$AWS_REGION" 2>&1)
+    UPDATE_EXIT=$?
 
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}✓ Lambda function updated${NC}"
+    if [ $UPDATE_EXIT -eq 0 ]; then
+        echo -e "${GREEN}✓ Lambda function code updated${NC}"
+        log "Lambda function code updated successfully"
+
+        # Wait for code update to complete
+        echo "Waiting for code update to complete (10 seconds)..."
+        sleep 10
+
+        # Update handler and runtime configuration
+        echo "Updating handler and runtime configuration..."
+        echo "  Runtime: nodejs22.x"
+        echo "  Handler: $HANDLER_NAME"
+
+        CONFIG_UPDATE_OUTPUT=$(aws lambda update-function-configuration \
+            --function-name "$FUNCTION_NAME" \
+            --runtime nodejs22.x \
+            --handler "$HANDLER_NAME" \
+            --region "$AWS_REGION" 2>&1)
+        CONFIG_UPDATE_EXIT=$?
+
+        if [ $CONFIG_UPDATE_EXIT -eq 0 ]; then
+            echo -e "${GREEN}✓ Configuration updated${NC}"
+            log "Handler and runtime updated to nodejs22.x and $HANDLER_NAME"
+        else
+            echo -e "${RED}✗ Configuration update failed${NC}"
+            echo "Error: $CONFIG_UPDATE_OUTPUT"
+
+            # Show current configuration
+            echo ""
+            echo "Checking current function configuration..."
+            aws lambda get-function-configuration \
+                --function-name "$FUNCTION_NAME" \
+                --region "$AWS_REGION" \
+                --query '{Runtime:Runtime,Handler:Handler}' \
+                --output table
+
+            echo ""
+            echo -e "${YELLOW}You may need to update the configuration manually:${NC}"
+            echo "aws lambda update-function-configuration \\"
+            echo "  --function-name $FUNCTION_NAME \\"
+            echo "  --runtime nodejs22.x \\"
+            echo "  --handler $HANDLER_NAME \\"
+            echo "  --region $AWS_REGION"
+        fi
     else
         echo -e "${RED}✗ Failed to update Lambda function${NC}"
-        echo "$UPDATE_OUTPUT" | head -10
+        echo -e "${RED}Exit code: $UPDATE_EXIT${NC}"
+        echo -e "${RED}Error details:${NC}"
+        echo "$UPDATE_OUTPUT"
+        log "Failed to update Lambda function - Exit: $UPDATE_EXIT - Output: $UPDATE_OUTPUT"
         exit 1
     fi
 else
@@ -583,13 +718,11 @@ else
           ]
         }'
 
-        set +e
         CREATE_ROLE_OUTPUT=$(aws iam create-role \
             --role-name "$ROLE_NAME" \
             --assume-role-policy-document "$TRUST_POLICY" \
             --description "Execution role for LOX24 Cognito SMS Sender Lambda" 2>&1)
         CREATE_ROLE_EXIT=$?
-        set -e
 
         if [ $CREATE_ROLE_EXIT -eq 0 ]; then
             ROLE_ARN=$(echo "$CREATE_ROLE_OUTPUT" | awk -F'"' '/"Arn":/ {print $4; exit}')
@@ -614,19 +747,24 @@ else
     echo "Creating new Lambda function..."
     CREATE_OUTPUT=$(aws lambda create-function \
         --function-name "$FUNCTION_NAME" \
-        --runtime nodejs18.x \
+        --runtime nodejs22.x \
         --role "$ROLE_ARN" \
-        --handler index.handler \
+        --handler "$HANDLER_NAME" \
         --zip-file fileb://lox24-cognito-sms-lambda.zip \
         --timeout 30 \
         --memory-size 256 \
         --region "$AWS_REGION" 2>&1)
+    CREATE_EXIT=$?
 
-    if [ $? -eq 0 ]; then
+    if [ $CREATE_EXIT -eq 0 ]; then
         echo -e "${GREEN}✓ Lambda function created${NC}"
+        log "Lambda function created successfully"
     else
         echo -e "${RED}✗ Failed to create Lambda function${NC}"
-        echo "$CREATE_OUTPUT" | head -10
+        echo -e "${RED}Exit code: $CREATE_EXIT${NC}"
+        echo -e "${RED}Error details:${NC}"
+        echo "$CREATE_OUTPUT"
+        log "Failed to create Lambda function - Exit: $CREATE_EXIT - Output: $CREATE_OUTPUT"
         exit 1
     fi
 fi
@@ -658,13 +796,11 @@ cat > "$ENV_FILE" <<EOF
 }
 EOF
 
-set +e
 ENV_UPDATE_OUTPUT=$(aws lambda update-function-configuration \
     --function-name "$FUNCTION_NAME" \
     --environment "file://$ENV_FILE" \
     --region "$AWS_REGION" 2>&1)
 ENV_UPDATE_EXIT=$?
-set -e
 
 # Clean up temp file
 rm -f "$ENV_FILE"
@@ -729,15 +865,15 @@ if [ -n "$LAMBDA_ROLE_ARN" ]; then
 
     # FIX: Better KMS permission checking
     echo -n "Checking KMS decrypt permission... "
-    set +e
 
     # Check if the policy already exists
     HAS_KMS_DECRYPT=false
     POLICY_CHECK=$(aws iam get-role-policy \
         --role-name "$LAMBDA_ROLE_NAME" \
         --policy-name "LOX24-KMS-Decrypt-Policy" 2>&1)
+    POLICY_CHECK_EXIT=$?
 
-    if [ $? -eq 0 ]; then
+    if [ $POLICY_CHECK_EXIT -eq 0 ]; then
         # Policy exists, check if it has KMS decrypt
         if echo "$POLICY_CHECK" | grep -q "kms:Decrypt"; then
             HAS_KMS_DECRYPT=true
@@ -758,8 +894,6 @@ if [ -n "$LAMBDA_ROLE_ARN" ]; then
         done
     fi
 
-    set -e
-
     if [ "$HAS_KMS_DECRYPT" = "true" ]; then
         echo -e "${GREEN}✓${NC}"
     else
@@ -776,7 +910,8 @@ if [ -n "$LAMBDA_ROLE_ARN" ]; then
             "Effect": "Allow",
             "Action": [
                 "kms:Decrypt",
-                "kms:DescribeKey"
+                "kms:DescribeKey",
+                "kms:CreateGrant"
             ],
             "Resource": "$KMS_KEY_ARN"
         }
@@ -784,13 +919,11 @@ if [ -n "$LAMBDA_ROLE_ARN" ]; then
 }
 EOF
 
-        set +e
         PUT_POLICY_OUTPUT=$(aws iam put-role-policy \
             --role-name "$LAMBDA_ROLE_NAME" \
             --policy-name "LOX24-KMS-Decrypt-Policy" \
             --policy-document "file://$KMS_POLICY_FILE" 2>&1)
         PUT_POLICY_EXIT=$?
-        set -e
 
         rm -f "$KMS_POLICY_FILE"
 
@@ -844,7 +977,6 @@ if [ -n "$USER_POOL_ID" ]; then
 
     # Add Lambda permission for Cognito to invoke
     echo -n "Adding Lambda invoke permission... "
-    set +e
     PERM_OUTPUT=$(aws lambda add-permission \
         --function-name "$FUNCTION_NAME" \
         --statement-id CognitoInvokeSMS \
@@ -853,7 +985,6 @@ if [ -n "$USER_POOL_ID" ]; then
         --source-arn "arn:aws:cognito-idp:$AWS_REGION:$AWS_ACCOUNT:userpool/$USER_POOL_ID" \
         --region "$AWS_REGION" 2>&1)
     PERM_EXIT=$?
-    set -e
 
     if [ $PERM_EXIT -eq 0 ]; then
         echo -e "${GREEN}✓${NC}"
@@ -866,7 +997,6 @@ if [ -n "$USER_POOL_ID" ]; then
 
     # Update User Pool to use custom SMS sender
     echo -n "Configuring User Pool custom SMS sender... "
-    set +e
 
     # Get Lambda ARN
     FUNCTION_ARN=$(aws lambda get-function \
@@ -880,7 +1010,6 @@ if [ -n "$USER_POOL_ID" ]; then
         --region "$AWS_REGION" \
         --lambda-config "CustomSMSSender={LambdaVersion=V1_0,LambdaArn=$FUNCTION_ARN},KMSKeyID=$KMS_KEY_ARN" 2>&1)
     UPDATE_POOL_EXIT=$?
-    set -e
 
     if [ $UPDATE_POOL_EXIT -eq 0 ]; then
         echo -e "${GREEN}✓${NC}"
@@ -909,49 +1038,68 @@ if [ -n "$USER_POOL_ID" ]; then
 
                 TEST_USERNAME="test-$(date +%s)"
 
-                set +e
                 # Create test user
-                aws cognito-idp admin-create-user \
+                echo -n "Creating test user... "
+                CREATE_USER_OUTPUT=$(aws cognito-idp admin-create-user \
                     --user-pool-id "$USER_POOL_ID" \
                     --username "$TEST_USERNAME" \
-                    --user-attributes Name=phone_number,Value="$test_phone" Name=phone_number_verified,Value=true \
+                    --user-attributes Name=phone_number,Value="$test_phone" \
                     --message-action SUPPRESS \
-                    --region "$AWS_REGION" >/dev/null 2>&1
-
-                # Set password
-                aws cognito-idp admin-set-user-password \
-                    --user-pool-id "$USER_POOL_ID" \
-                    --username "$TEST_USERNAME" \
-                    --password "TempPass123!" \
-                    --permanent \
-                    --region "$AWS_REGION" >/dev/null 2>&1
-
-                # Trigger SMS
-                RESET_OUTPUT=$(aws cognito-idp admin-reset-user-password \
-                    --user-pool-id "$USER_POOL_ID" \
-                    --username "$TEST_USERNAME" \
                     --region "$AWS_REGION" 2>&1)
-                RESET_EXIT=$?
-                set -e
+                CREATE_USER_EXIT=$?
 
-                if [ $RESET_EXIT -eq 0 ]; then
-                    echo -e "${GREEN}✓ Test SMS sent successfully!${NC}"
-                    echo "Check your phone for the verification code."
+                if [ $CREATE_USER_EXIT -ne 0 ]; then
+                    echo -e "${RED}✗${NC}"
+                    echo "Error creating user: $CREATE_USER_OUTPUT"
                 else
-                    echo -e "${RED}✗ Failed to send test SMS${NC}"
-                    echo "Error: $RESET_OUTPUT"
-                fi
+                    echo -e "${GREEN}✓${NC}"
 
-                # Cleanup
-                echo ""
-                read -p "Delete test user? (Y/n): " -n 1 -r
-                echo ""
-                if [[ ! $REPLY =~ ^[Nn]$ ]]; then
-                    aws cognito-idp admin-delete-user \
+                    # Mark phone as verified
+                    echo -n "Verifying phone number... "
+                    aws cognito-idp admin-update-user-attributes \
                         --user-pool-id "$USER_POOL_ID" \
                         --username "$TEST_USERNAME" \
+                        --user-attributes Name=phone_number_verified,Value=true \
                         --region "$AWS_REGION" >/dev/null 2>&1
-                    echo "✓ Test user deleted"
+                    echo -e "${GREEN}✓${NC}"
+
+                    # Set password
+                    echo -n "Setting password... "
+                    aws cognito-idp admin-set-user-password \
+                        --user-pool-id "$USER_POOL_ID" \
+                        --username "$TEST_USERNAME" \
+                        --password "TempPass123!" \
+                        --permanent \
+                        --region "$AWS_REGION" >/dev/null 2>&1
+                    echo -e "${GREEN}✓${NC}"
+
+                    # Trigger SMS via password reset
+                    echo "Triggering SMS via password reset..."
+                    RESET_OUTPUT=$(aws cognito-idp admin-reset-user-password \
+                        --user-pool-id "$USER_POOL_ID" \
+                        --username "$TEST_USERNAME" \
+                        --region "$AWS_REGION" 2>&1)
+                    RESET_EXIT=$?
+
+                    if [ $RESET_EXIT -eq 0 ]; then
+                        echo -e "${GREEN}✓ Test SMS sent successfully!${NC}"
+                        echo "Check your phone for the verification code."
+                    else
+                        echo -e "${RED}✗ Failed to send test SMS${NC}"
+                        echo "Error: $RESET_OUTPUT"
+                    fi
+
+                    # Cleanup
+                    echo ""
+                    read -p "Delete test user? (Y/n): " -n 1 -r
+                    echo ""
+                    if [[ ! $REPLY =~ ^[Nn]$ ]]; then
+                        aws cognito-idp admin-delete-user \
+                            --user-pool-id "$USER_POOL_ID" \
+                            --username "$TEST_USERNAME" \
+                            --region "$AWS_REGION" >/dev/null 2>&1
+                        echo "✓ Test user deleted"
+                    fi
                 fi
             else
                 echo -e "${RED}Invalid phone number format${NC}"
@@ -962,6 +1110,12 @@ if [ -n "$USER_POOL_ID" ]; then
         echo "Error: $UPDATE_POOL_OUTPUT"
         echo ""
         echo "You may need to configure the User Pool manually."
+        echo ""
+        echo "Manual configuration command:"
+        echo "aws cognito-idp update-user-pool \\"
+        echo "  --user-pool-id $USER_POOL_ID \\"
+        echo "  --region $AWS_REGION \\"
+        echo "  --lambda-config \"CustomSMSSender={LambdaVersion=V1_0,LambdaArn=$FUNCTION_ARN},KMSKeyID=$KMS_KEY_ARN\""
     fi
 else
     echo "User Pool ID not provided - skipping Cognito configuration"

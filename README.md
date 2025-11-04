@@ -53,39 +53,6 @@ Templates use placeholders that get replaced during execution:
 - `{{IP_CONDITION}}` - Optional IP restriction clause
 - `YOUR_*` - Values you provide during deployment
 
-## Quick Fix for Current KMS Error
-
-Since you already have the deployment running but KMS decrypt is failing:
-
-```bash
-# 1. Create the KMS policy from template
-cat > kms-policy.json <<EOF
-{
-    "Version": "2012-10-17",
-    "Statement": [{
-        "Effect": "Allow",
-        "Action": ["kms:Decrypt", "kms:DescribeKey"],
-        "Resource": "arn:aws:kms:eu-central-1:230134100954:key/f556911d-43b2-46e1-b2de-ad29d4e8ab07"
-    }]
-}
-EOF
-
-# 2. Apply it
-aws iam put-role-policy \
-  --role-name LOX24-Cognito-SMS-Lambda-Role \
-  --policy-name LOX24-KMS-Decrypt-Policy \
-  --policy-document file://kms-policy.json
-
-# 3. Wait for propagation
-sleep 30
-
-# 4. Test SMS again
-aws cognito-idp admin-reset-user-password \
-  --user-pool-id eu-central-1_EZUSKNkVn \
-  --username test-1761888351 \
-  --region eu-central-1
-```
-
 ## Security Notes
 
 - IAM deployment policy is IP-restricted by default
