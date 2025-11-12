@@ -59,3 +59,13 @@ Templates use placeholders that get replaced during execution:
 - Remove the temporary deployment policy after use
 - Lambda role only has access to the specific KMS key
 - All policies follow least-privilege principle
+
+
+## Deploy from AWS Serverless Application Repository
+
+[![Deploy](https://img.shields.io/badge/SAR-Deploy%20Now-yellow)](https://serverlessrepo.aws.amazon.com/applications/arn:aws:serverlessrepo:us-east-1:230134100954:applications~lox24-cognito-sms)
+
+1. Visit the [AWS Serverless Application Repository](https://serverlessrepo.aws.amazon.com/applications/arn:aws:serverlessrepo:us-east-1:230134100954:applications~lox24-cognito-sms)
+2. Click "Deploy"
+3. Enter your LOX24 credentials
+4. Deploy and configure in Cognito User Pool

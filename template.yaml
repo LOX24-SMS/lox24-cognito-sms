@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+#Metadata:
+#  AWS::ServerlessRepo::Application:
+#    Name: lox24-cognito-sms
+#    Description: 5-minute AWS Cognito SMS integration with LOX24 SMS Gateway
+#    Author: LOX24 SMS
+#    SpdxLicenseId: MIT
+#    LicenseUrl: https://raw.githubusercontent.com/LOX24-SMS/lox24-cognito-sms/main/LICENSE
+#    ReadmeUrl: https://raw.githubusercontent.com/LOX24-SMS/lox24-cognito-sms/main/README.md
+#    Labels: ['cognito', 'sms', 'authentication', 'mfa']
+#    HomePageUrl: https://github.com/LOX24-SMS/lox24-cognito-sms
+#    SemanticVersion: 1.0.0
+#    SourceCodeUrl: https://github.com/LOX24-SMS/lox24-cognito-sms
+
+Parameters:
+  LOX24AuthToken:
+    Type: String
+    Description: Your LOX24 SMS Gateway authentication token (account.lox24eu -> Settings -> API-Settings)
+    NoEcho: true
+  LOX24SenderId:
+    Type: String
+    Description: Sender ID for SMS messages (e.164 phone's format or string ([a-zA-Z0-9 ]{1,11})
+  LOX24ApiHost:
+    Type: String
+    Description: LOX24 API host
+    Default: api.lox24.eu
+  LOX24ServiceCode:
+    Type: String
+    Description: LOX24 service code
+    Default: direct
+    AllowedValues:
+      - direct
+      - text2speech # Per voice messages by calls
+  EnableDebugLogging:
+    Type: String
+    Description: Enable debug logging
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Resources:
+  CognitoSMSFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ./
+      Handler: index.handler
+      Runtime: nodejs20.x
+      Timeout: 10
+      Environment:
+        Variables:
+          LOX24_AUTH_TOKEN: !Ref LOX24AuthToken
+          LOX24_SENDER_ID: !Ref LOX24SenderId
+          LOX24_API_HOST: !Ref LOX24ApiHost
+          LOX24_SERVICE_CODE: !Ref LOX24ServiceCode
+          ENABLE_DEBUG_LOGGING: !Ref EnableDebugLogging
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/*'
+
+Outputs:
+  FunctionArn:
+    Description: Lambda Function ARN to configure in Cognito User Pool
+    Value: !GetAtt CognitoSMSFunction.Arn
+  FunctionName:
+    Description: Lambda Function Name
+    Value: !Ref CognitoSMSFunction

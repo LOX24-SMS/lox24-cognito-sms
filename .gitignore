@@ -38,3 +38,13 @@ coverage/
 # Temporary files
 tmp/
 temp/
+/update-lambda-catalog.sh
+
+# SAM/CloudFormation packaged artifacts
+packaged.yaml
+packaged-final.yaml
+packaged*.yaml
+
+# SAM CLI artifacts
+.aws-sam/
+samconfig.toml
